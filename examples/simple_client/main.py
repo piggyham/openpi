@@ -131,7 +131,14 @@ def main(args: Args) -> None:
 
     # Send a few observations to make sure the model is loaded.
     for _ in range(2):
-        policy.infer(obs_fn())
+        action = policy.infer(obs_fn())
+
+    print("Action keys:", action.keys())
+
+    if "actions" in action:
+        actions = np.asarray(action["actions"])
+        print("Actions shape:", actions.shape)
+        print("First action:", actions[0])
 
     timing_recorder = TimingRecorder()
 
