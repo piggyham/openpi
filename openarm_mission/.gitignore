@@ -1,0 +1,6 @@
+third_party/openarm_mujoco/
+artifacts/
+__pycache__/
+tests/__pycache__/
+*.pyc
+

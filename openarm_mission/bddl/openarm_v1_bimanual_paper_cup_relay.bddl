@@ -1,0 +1,54 @@
+(define (problem LIBERO_OpenArm_Bimanual_Tabletop_Manipulation)
+  (:domain robosuite)
+  (:language Right hand picks the paper cup from the red region and places it
+    at the center, then the left hand picks it and places it in the blue region)
+
+  (:regions
+    (red_a_region
+      (:target mission_table)
+      (:ranges (
+        (-0.055 -0.215 -0.025 -0.185)
+      ))
+      (:yaw_rotation (
+        (-3.141592653589793 3.141592653589793)
+      ))
+      (:rgba (0.90 0.05 0.05 1.0))
+    )
+    (center_handoff_region
+      (:target mission_table)
+      (:ranges (
+        (-0.025 -0.025 0.025 0.025)
+      ))
+      (:rgba (0.82 0.70 0.32 0.60))
+    )
+    (blue_b_region
+      (:target mission_table)
+      (:ranges (
+        (-0.065 0.175 -0.015 0.225)
+      ))
+      (:rgba (0.05 0.18 0.95 1.0))
+    )
+  )
+
+  (:fixtures
+    mission_table - table
+  )
+
+  (:objects
+    paper_cup_1 - paper_cup
+  )
+
+  (:obj_of_interest
+    paper_cup_1
+  )
+
+  (:init
+    (On paper_cup_1 mission_table_red_a_region)
+  )
+
+  (:goal
+    (And
+      (On paper_cup_1 mission_table_blue_b_region)
+    )
+  )
+)

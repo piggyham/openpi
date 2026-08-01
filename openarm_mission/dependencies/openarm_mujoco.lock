@@ -1,0 +1,5 @@
+repository=https://github.com/enactic/openarm_mujoco.git
+revision=8955afb54e4adfb59a236e2b4d15192b7a02865c
+model=v1/openarm_bimanual.xml
+license=Apache-2.0
+
