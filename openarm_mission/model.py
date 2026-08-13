@@ -59,6 +59,8 @@ def _add_mission_assets(asset: ET.Element, config: MissionConfig) -> None:
         "mission_cup_material": "0.96 0.95 0.90 1",
         "mission_cup_inside_material": "0.12 0.12 0.12 1",
         "mission_finger_pad_material": "0.12 0.62 0.34 1",
+        "mission_camera_material": "0.18 0.18 0.20 1",
+        "mission_lens_material": "0.02 0.02 0.02 1",
     }
     for name, rgba in materials.items():
         ET.SubElement(asset, "material", name=name, rgba=rgba)
@@ -128,7 +130,7 @@ def _paper_cup_frustum_mesh(
     return np.asarray(vertices, dtype=np.float64).reshape(-1), faces
 
 
-def _add_tcp_sites(root: ET.Element) -> None:
+def _add_tcp_sites(root: ET.Element, config: MissionConfig) -> None:
     for side, rgba in (("left", "1 0.3 0.1 1"), ("right", "0.1 0.5 1 1")):
         body = root.find(f".//body[@name='openarm_{side}_hand_tcp']")
         if body is None:
@@ -142,13 +144,142 @@ def _add_tcp_sites(root: ET.Element) -> None:
             rgba=rgba,
             group="4",
         )
+        # Camera bracket mounted on the gripper-motor housing (J8 / `hand`
+        # body) at the J7-J8 junction. In the hand frame +x is world-up and +z
+        # is forward (toward the cup). The bracket is an L: a short vertical
+        # post along +x then a horizontal arm along +z, carrying the camera
+        # housing at its end. The render sensor keeps the 90deg-about-y quat so
+        # it still looks straight world-down from the same vantage point
+        # (hand + 0.03*up + 0.105*forward == the previous raised position),
+        # which leaves the existing dataset viewpoint unchanged.
+        hand = root.find(f".//body[@name='openarm_{side}_hand']")
+        if hand is None:
+            raise ValueError(f"Official model is missing openarm_{side}_hand")
+        bracket = ET.SubElement(
+            hand,
+            "body",
+            name=f"mission_{side}_camera_bracket",
+            pos="0 0 0",
+        )
         ET.SubElement(
-            body,
+            bracket,
+            "inertial",
+            pos="0.04 0 0.025",
+            mass="0.05",
+            diaginertia="1e-5 1e-5 3e-6",
+        )
+        # Vertical post (rises along hand +x = world up).
+        ET.SubElement(
+            bracket,
+            "geom",
+            name=f"mission_{side}_camera_bracket_post",
+            type="box",
+            pos="0.04 0 0",
+            size="0.04 0.004 0.004",
+            material="mission_camera_material",
+            group="0",
+            contype="0",
+            conaffinity="0",
+        )
+        # Horizontal arm (runs forward along hand +z toward the grip point).
+        ET.SubElement(
+            bracket,
+            "geom",
+            name=f"mission_{side}_camera_bracket_arm",
+            type="box",
+            pos="0.08 0 0.025",
+            size="0.004 0.004 0.025",
+            material="mission_camera_material",
+            group="0",
+            contype="0",
+            conaffinity="0",
+        )
+        # Collision volumes for the bracket.
+        ET.SubElement(
+            bracket,
+            "geom",
+            name=f"mission_{side}_camera_bracket_post_collision",
+            type="box",
+            pos="0.04 0 0",
+            size="0.04 0.004 0.004",
+            rgba="0.18 0.18 0.20 0.25",
+            group="3",
+            contype="1",
+            conaffinity="1",
+        )
+        ET.SubElement(
+            bracket,
+            "geom",
+            name=f"mission_{side}_camera_bracket_arm_collision",
+            type="box",
+            pos="0.08 0 0.025",
+            size="0.004 0.004 0.025",
+            rgba="0.18 0.18 0.20 0.25",
+            group="3",
+            contype="1",
+            conaffinity="1",
+        )
+        # Camera housing at the bracket end. Its +z is world-up (behind the
+        # lens), so the housing stays out of the downward view.
+        mount = ET.SubElement(
+            bracket,
+            "body",
+            name=f"mission_{side}_wrist_camera_mount",
+            pos="0.08 0 0.05",
+            quat="0.5 0.5 0.5 0.5",
+        )
+        ET.SubElement(
+            mount,
+            "inertial",
+            pos="0 0 0.006",
+            mass="0.03",
+            diaginertia="3e-6 3e-6 2e-6",
+        )
+        ET.SubElement(
+            mount,
+            "geom",
+            name=f"mission_{side}_wrist_camera_housing",
+            type="box",
+            pos="0 0 0.006",
+            size="0.014 0.014 0.008",
+            material="mission_camera_material",
+            group="0",
+            contype="0",
+            conaffinity="0",
+        )
+        ET.SubElement(
+            mount,
+            "geom",
+            name=f"mission_{side}_wrist_camera_lens",
+            type="cylinder",
+            pos="0 0 0.001",
+            size="0.006 0.002",
+            material="mission_lens_material",
+            group="0",
+            contype="0",
+            conaffinity="0",
+        )
+        ET.SubElement(
+            mount,
+            "geom",
+            name=f"mission_{side}_wrist_camera_collision",
+            type="box",
+            pos="0 0 0.006",
+            size="0.014 0.014 0.008",
+            rgba="0.18 0.18 0.20 0.25",
+            group="3",
+            contype="1",
+            conaffinity="1",
+        )
+        tilt = np.deg2rad(config.wrist_camera_forward_tilt_deg)
+        camera_quat = np.array([np.cos(tilt / 2.0), np.sin(tilt / 2.0), 0.0, 0.0])
+        ET.SubElement(
+            mount,
             "camera",
             name=f"mission_{side}_wrist_camera",
-            pos="0 0 0.025",
-            quat="0.70710678 0 0.70710678 0",
-            fovy="75",
+            pos="0 0 0",
+            quat=_format_vector(camera_quat),
+            fovy=str(config.wrist_camera_fovy),
         )
 
 
@@ -241,6 +372,31 @@ def _stabilize_arm_dynamics(root: ET.Element) -> None:
             joint.set("damping", damping)
 
 
+def _add_mission_cameras(worldbody: ET.Element, config: MissionConfig) -> None:
+    target = np.array([config.table_center[0], 0.0, config.table_top_z])
+    front_pos = np.asarray(config.head_camera_position, dtype=np.float64)
+    front_target = np.asarray(config.head_camera_target, dtype=np.float64)
+    overhead_pos = np.array([config.table_center[0], 0.0, 1.25])
+    ET.SubElement(
+        worldbody,
+        "camera",
+        name="mission_front_camera",
+        mode="fixed",
+        pos=_format_vector(front_pos),
+        xyaxes=_camera_xyaxes(front_pos, front_target),
+        fovy=str(config.head_camera_fovy),
+    )
+    ET.SubElement(
+        worldbody,
+        "camera",
+        name="mission_overhead_camera",
+        mode="fixed",
+        pos=_format_vector(overhead_pos),
+        xyaxes=_camera_xyaxes(overhead_pos, target),
+        fovy="52",
+    )
+
+
 def _add_task_scene(root: ET.Element, config: MissionConfig) -> None:
     asset = root.find("asset")
     worldbody = root.find("worldbody")
@@ -284,50 +440,80 @@ def _add_task_scene(root: ET.Element, config: MissionConfig) -> None:
         friction="1.2 0.02 0.002",
     )
 
-    region_z = config.table_half_size[2] + 0.003
-    for name, center, material, rgba in (
-        ("mission_region_a", config.region_a_center, "mission_red_material", "0.9 0.05 0.05 1"),
-        ("mission_region_b", config.region_b_center, "mission_blue_material", "0.05 0.18 0.95 1"),
-    ):
+    if config.table_legs:
+        leg_top = config.table_center[2] - config.table_half_size[2]
+        leg_half_z = leg_top / 2.0
+        # Place the square legs at the table corners. Inset by the leg half-width
+        # so the outer leg faces sit flush with the table edge; the older
+        # hard-coded 0.08 inset put the legs outside a narrow (10cm-deep) table.
+        leg_x = config.table_half_size[0] - 0.03
+        leg_y = config.table_half_size[1] - 0.03
+        for sx in (-1, 1):
+            for sy in (-1, 1):
+                ET.SubElement(
+                    table,
+                    "geom",
+                    name=f"mission_table_leg_{'p' if sx > 0 else 'n'}{'p' if sy > 0 else 'n'}",
+                    type="box",
+                    pos=_format_vector(
+                        (
+                            sx * leg_x,
+                            sy * leg_y,
+                            leg_half_z - config.table_center[2],
+                        )
+                    ),
+                    size=_format_vector((0.03, 0.03, leg_half_z)),
+                    material="mission_table_material",
+                )
+
+    if config.include_region_markers:
+        region_z = config.table_half_size[2] + 0.003
+        for name, center, material, rgba in (
+            ("mission_region_a", config.region_a_center, "mission_red_material", "0.9 0.05 0.05 1"),
+            ("mission_region_b", config.region_b_center, "mission_blue_material", "0.05 0.18 0.95 1"),
+        ):
+            ET.SubElement(
+                table,
+                "geom",
+                name=name,
+                type="cylinder",
+                pos=_format_vector(
+                    (
+                        center[0] - config.table_center[0],
+                        center[1] - config.table_center[1],
+                        region_z,
+                    )
+                ),
+                size=_format_vector((config.region_radius, 0.0025)),
+                material=material,
+                rgba=rgba,
+                contype="0",
+                conaffinity="0",
+                group="2",
+            )
         ET.SubElement(
             table,
             "geom",
-            name=name,
+            name="mission_handoff_marker",
             type="cylinder",
             pos=_format_vector(
                 (
-                    center[0] - config.table_center[0],
-                    center[1] - config.table_center[1],
+                    config.handoff_center[0] - config.table_center[0],
+                    config.handoff_center[1] - config.table_center[1],
                     region_z,
                 )
             ),
-            size=_format_vector((config.region_radius, 0.0025)),
-            material=material,
-            rgba=rgba,
+            size="0.07 0.0018",
+            material="mission_handoff_material",
+            rgba="0.82 0.70 0.32 0.55",
             contype="0",
             conaffinity="0",
             group="2",
         )
-    ET.SubElement(
-        table,
-        "geom",
-        name="mission_handoff_marker",
-        type="cylinder",
-        pos=_format_vector(
-            (
-                config.handoff_center[0] - config.table_center[0],
-                config.handoff_center[1] - config.table_center[1],
-                region_z,
-            )
-        ),
-        size="0.07 0.0018",
-        material="mission_handoff_material",
-        rgba="0.82 0.70 0.32 0.55",
-        contype="0",
-        conaffinity="0",
-        group="2",
-    )
 
+    if not config.include_cup:
+        _add_mission_cameras(worldbody, config)
+        return
     cup = ET.SubElement(
         worldbody,
         "body",
@@ -397,27 +583,7 @@ def _add_task_scene(root: ET.Element, config: MissionConfig) -> None:
         group="4",
     )
 
-    target = np.array([config.table_center[0], 0.0, config.table_top_z])
-    front_pos = np.array([1.10, 0.0, 0.92])
-    overhead_pos = np.array([0.50, 0.0, 1.25])
-    ET.SubElement(
-        worldbody,
-        "camera",
-        name="mission_front_camera",
-        mode="fixed",
-        pos=_format_vector(front_pos),
-        xyaxes=_camera_xyaxes(front_pos, target),
-        fovy="58",
-    )
-    ET.SubElement(
-        worldbody,
-        "camera",
-        name="mission_overhead_camera",
-        mode="fixed",
-        pos=_format_vector(overhead_pos),
-        xyaxes=_camera_xyaxes(overhead_pos, target),
-        fovy="52",
-    )
+    _add_mission_cameras(worldbody, config)
 
     equality = root.find("equality")
     if equality is None:
@@ -479,7 +645,7 @@ def build_mission_xml(config: MissionConfig | None = None) -> str:
 
     _make_grippers_position_controlled(root, config)
     _stabilize_arm_dynamics(root)
-    _add_tcp_sites(root)
+    _add_tcp_sites(root, config)
     _add_task_scene(root, config)
     _add_soft_finger_pads(root, config)
     for side in ("left", "right"):
@@ -504,20 +670,31 @@ class OpenArmMission:
         self.model = mujoco.MjModel.from_xml_string(self.xml)
         self.data = mujoco.MjData(self.model)
         self.arms = {side: self._resolve_arm(side) for side in ("left", "right")}
-        self.cup_joint_id = self._id(mujoco.mjtObj.mjOBJ_JOINT, "mission_cup_freejoint")
-        self.cup_qpos_address = int(self.model.jnt_qposadr[self.cup_joint_id])
-        self.cup_dof_address = int(self.model.jnt_dofadr[self.cup_joint_id])
-        self.model.dof_damping[self.cup_dof_address : self.cup_dof_address + 3] = self.config.cup_linear_damping
-        self.model.dof_damping[self.cup_dof_address + 3 : self.cup_dof_address + 6] = self.config.cup_angular_damping
-        self.cup_body_id = self._id(mujoco.mjtObj.mjOBJ_BODY, "mission_cup")
-        self.cup_geom_id = self._id(mujoco.mjtObj.mjOBJ_GEOM, "mission_cup_body")
-        self.cup_weld_ids = {
-            side: self._id(
-                mujoco.mjtObj.mjOBJ_EQUALITY,
-                f"mission_{side}_cup_weld",
+        self.has_cup = bool(self.config.include_cup)
+        if self.has_cup:
+            self.cup_joint_id = self._id(mujoco.mjtObj.mjOBJ_JOINT, "mission_cup_freejoint")
+            self.cup_qpos_address = int(self.model.jnt_qposadr[self.cup_joint_id])
+            self.cup_dof_address = int(self.model.jnt_dofadr[self.cup_joint_id])
+            self.model.dof_damping[self.cup_dof_address : self.cup_dof_address + 3] = self.config.cup_linear_damping
+            self.model.dof_damping[self.cup_dof_address + 3 : self.cup_dof_address + 6] = (
+                self.config.cup_angular_damping
             )
-            for side in ("left", "right")
-        }
+            self.cup_body_id = self._id(mujoco.mjtObj.mjOBJ_BODY, "mission_cup")
+            self.cup_geom_id = self._id(mujoco.mjtObj.mjOBJ_GEOM, "mission_cup_body")
+            self.cup_weld_ids = {
+                side: self._id(
+                    mujoco.mjtObj.mjOBJ_EQUALITY,
+                    f"mission_{side}_cup_weld",
+                )
+                for side in ("left", "right")
+            }
+        else:
+            self.cup_joint_id = None
+            self.cup_qpos_address = None
+            self.cup_dof_address = None
+            self.cup_body_id = None
+            self.cup_geom_id = None
+            self.cup_weld_ids = {}
         self.finger_pad_geom_ids = {
             side: {
                 finger: mujoco.mj_name2id(
@@ -580,10 +757,11 @@ class OpenArmMission:
             self.data.qpos[arm.finger_qpos_indices] = self.config.open_finger_qpos
             self.data.ctrl[arm.finger_actuator_ids] = self.config.open_finger_qpos
 
-        cup_position = np.asarray(self.config.cup_initial_position)
-        self.data.qpos[self.cup_qpos_address : self.cup_qpos_address + 7] = np.concatenate(
-            [cup_position, np.array([1.0, 0.0, 0.0, 0.0])]
-        )
+        if self.has_cup:
+            cup_position = np.asarray(self.config.cup_initial_position)
+            self.data.qpos[self.cup_qpos_address : self.cup_qpos_address + 7] = np.concatenate(
+                [cup_position, np.array([1.0, 0.0, 0.0, 0.0])]
+            )
         self.data.qvel[:] = 0.0
         mujoco.mj_forward(self.model, self.data)
 
@@ -597,16 +775,23 @@ class OpenArmMission:
         mujoco.mju_mat2Quat(quaternion, rotation.reshape(-1))
         return position, quaternion
 
+    def _require_cup(self) -> None:
+        if not self.has_cup:
+            raise RuntimeError("this scene configuration has no cup")
+
     def cup_position(self) -> np.ndarray:
+        self._require_cup()
         return np.array(self.data.qpos[self.cup_qpos_address : self.cup_qpos_address + 3], copy=True)
 
     def cup_quaternion(self) -> np.ndarray:
+        self._require_cup()
         return np.array(
             self.data.qpos[self.cup_qpos_address + 3 : self.cup_qpos_address + 7],
             copy=True,
         )
 
     def cup_velocity(self) -> tuple[np.ndarray, np.ndarray]:
+        self._require_cup()
         return (
             np.array(
                 self.data.qvel[self.cup_dof_address : self.cup_dof_address + 3],

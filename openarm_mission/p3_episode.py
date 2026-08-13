@@ -102,6 +102,11 @@ class P3EpisodeRunner:
             )
             for side, arm in self.mission.arms.items()
         }
+        ready = np.asarray(self.mission.config.ready_arm_qpos, dtype=np.float64)
+        if ready.shape != (7,):
+            raise ValueError("ready_arm_qpos must contain exactly seven joint values")
+        self.ready_qpos = {side: np.array(ready, copy=True) for side in self.mission.arms}
+        self.home_tcp_positions = {side: self.mission.tcp_pose(side)[0] for side in self.mission.arms}
         self._frame_index = 0
         self._phase_title = "初始化"
         self._phase_subtitle = "随机化纸杯位姿、质量和摩擦"
@@ -309,6 +314,63 @@ class P3EpisodeRunner:
             )
         self._move_joints(side, result.qpos, seconds)
 
+    def _arm_stow_clearance(self, side: str) -> np.ndarray:
+        """Return the side-specific Cartesian waypoint behind the table."""
+        return np.array(
+            [
+                self.mission.config.arm_stow_clearance_x,
+                self.home_tcp_positions[side][1],
+                self.mission.config.arm_stow_clearance_z,
+            ],
+            dtype=np.float64,
+        )
+
+    def _arm_unfold_qpos(self, side: str) -> np.ndarray:
+        """Sparse first waypoint: retract the shoulder using only J1/J4."""
+        target = np.array(self.home_qpos[side], copy=True)
+        # The two OpenArm bases are mirrored. Positive left J1 and negative
+        # right J1 both retract the shoulder away from the table.
+        target[0] = self.mission.config.arm_unfold_joint1 * (1.0 if side == "left" else -1.0)
+        target[3] = self.mission.config.arm_unfold_joint4
+        return target
+
+    def _prepare_arm_for_task(self, side: str) -> None:
+        """Retract the shoulder and raise the gripper above the tabletop."""
+        color = (99, 183, 255) if side == "left" else (242, 83, 89)
+        label = "左" if side == "left" else "右"
+        self._set_phase(
+            f"{label}臂肩部后撤",
+            "仅 J1/J4 运动: 自然下垂 → 夹爪抬至桌面上方",
+            color,
+        )
+        self._move_joints(
+            side,
+            self._arm_unfold_qpos(side),
+            self.mission.config.arm_unfold_seconds,
+        )
+        self._hold(0.10)
+
+    def _stow_arm_after_task(
+        self,
+        side: str,
+        *,
+        ready_seconds: float = 0.90,
+        clearance_seconds: float = 0.90,
+        home_seconds: float = 1.80,
+    ) -> None:
+        """Return one arm to natural hang through the safe task-ready pose."""
+        color = (99, 183, 255) if side == "left" else (242, 83, 89)
+        label = "左" if side == "left" else "右"
+        self._set_phase(
+            f"{label}臂安全收纳",
+            "高位后撤 → 桌外工作位 → 沿底座侧面自然下垂",
+            color,
+        )
+        self._move_joints(side, self.ready_qpos[side], ready_seconds)
+        self._move_tcp(side, self._arm_stow_clearance(side), clearance_seconds)
+        self._move_joints(side, self.home_qpos[side], home_seconds)
+        self._hold(0.10)
+
     def _set_gripper(self, side: str, target: float, seconds: float) -> None:
         start = self.controller.target_gripper[side]
         frame_count = max(1, round(seconds * self.fps))
@@ -347,6 +409,13 @@ class P3EpisodeRunner:
         return qpos, yaw
 
     def _approach_and_attach(self, side: str) -> float:
+        self._prepare_arm_for_task(side)
+        label = "左" if side == "left" else "右"
+        self._set_phase(
+            f"{label}手接触夹取",
+            "从工作准备位垂直接近并闭合夹爪",
+            (99, 183, 255) if side == "left" else (242, 83, 89),
+        )
         cup_position = self.mission.cup_position()
         self._move_tcp(
             side,
@@ -440,7 +509,7 @@ class P3EpisodeRunner:
             np.array([retreat_xy[0], retreat_xy[1], 0.52]),
             0.65,
         )
-        self._move_joints(side, self.home_qpos[side], 0.75)
+        self._stow_arm_after_task(side)
 
     def _run_success(self) -> None:
         red = self.mission.config.region_a_center

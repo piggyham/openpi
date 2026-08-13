@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 
+import mujoco
 import numpy as np
 
 from openarm_mission.controller import BimanualCartesianController
@@ -24,16 +25,36 @@ class BimanualControllerTest(unittest.TestCase):
         with self.assertRaises(InvalidActionError):
             self.controller.apply_action(invalid)
 
-    def test_clips_cartesian_targets_to_workspace(self):
-        action = np.full(14, 1e6)
+    def test_hanging_target_reenters_workspace_without_snapping(self):
+        initial = {side: target.copy() for side, target in self.controller.target_position.items()}
+        action = np.zeros(14)
+        action[:3] = 1e6
+        action[7:10] = 1e6
         self.controller.apply_action(action)
         lower = self.controller.config.workspace_min_array()
+        for side, target in self.controller.target_position.items():
+            self.assertTrue(np.all(target >= initial[side]))
+            self.assertTrue(np.all(target <= initial[side] + self.controller.config.max_translation_delta + 1e-9))
+            outside = initial[side] < lower
+            self.assertTrue(np.all(target[outside] <= lower[outside]))
+
+    def test_clips_cartesian_targets_once_inside_workspace(self):
+        lower = self.controller.config.workspace_min_array()
         upper = self.controller.config.workspace_max_array()
+        midpoint = 0.5 * (lower + upper)
+        for side in ("left", "right"):
+            self.controller.target_position[side] = midpoint.copy()
+        self.controller.apply_action(np.full(14, 1e6))
         for target in self.controller.target_position.values():
             self.assertTrue(np.all(target >= lower))
             self.assertTrue(np.all(target <= upper))
 
     def test_random_nearby_ik_targets(self):
+        ready = np.asarray(self.mission.config.ready_arm_qpos)
+        for arm in self.mission.arms.values():
+            self.mission.data.qpos[arm.qpos_indices] = ready
+        mujoco.mj_forward(self.mission.model, self.mission.data)
+        self.controller.reset_targets()
         rng = np.random.default_rng(7)
         successes = 0
         total = 0
