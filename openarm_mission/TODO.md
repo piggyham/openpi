@@ -26,6 +26,10 @@
 - P5 前 20 条三相机轨迹通过图像、状态、动作和时间戳对齐检查。
 - P5 固定划分为 train/validation/test = 160/20/20。
 - P5 LeRobot v2 完整多模态集可重新加载：200 episodes、86,400 frames。
+- P5 手腕相机建模为物理刚体：从 J8/`hand` 体伸出 L 形支架 + 相机壳体（带碰撞体积），相机抬高 8 cm、画面顺时针旋转 90°；据此重采 200 条三相机数据。
+- P6 新建 `src/openpi/policies/openarm_policy.py`（`OpenArmInputs`/`OpenArmOutputs`）、`LeRobotOpenArmDataConfig`、`pi05_openarm_paper_cup_relay` 训练配置。
+- P6 归一化统计已计算并落盘（`assets/pi05_openarm_paper_cup_relay/openarm_paper_cup_relay/norm_stats.json`），含 state(16) 与 actions(14)，可被 data_config 回载。
+- P6 训练/统计运行前需 `export HF_LEROBOT_HOME=openarm_mission/artifacts/p5/lerobot`（本地 LeRobot 数据集定位）。
 
 ## P0：冻结需求
 
@@ -124,10 +128,10 @@
 
 ## P6：接入 openpi
 
-- [ ] 新建 `OpenArmInputs` 和 `OpenArmOutputs`。
-- [ ] 新建 `LeRobotOpenArmDataConfig`。
-- [ ] 新建 `pi05_openarm_paper_cup_relay` 训练配置。
-- [ ] 计算 OpenArm normalization statistics。
+- [x] 新建 `OpenArmInputs` 和 `OpenArmOutputs`。
+- [x] 新建 `LeRobotOpenArmDataConfig`。
+- [x] 新建 `pi05_openarm_paper_cup_relay` 训练配置。
+- [x] 计算 OpenArm normalization statistics。
 - [ ] 在 `serve_policy.py` 注册 OpenArm 环境。
 - [ ] 接入 14 维 action chunk、滚动重规划和双臂互锁。
 - [ ] 增加策略输入输出记录。
@@ -149,3 +153,19 @@
 - [ ] 增加仿真到真机的双相机/手眼标定。
 - [ ] 增加真机关节、速度、力矩、双臂互锁和急停保护。
 - [ ] 加入摩擦、质量、延迟和相机域随机化。
+
+## P9：按真机 v0.3.0 格式重采 200 条数据
+
+- [x] 扩展 P5TrajectoryRecorder：新增 qvel/qtorque/joint_target（DATASET_VERSION → openarm-p9-v1）
+- [x] schema_dict / validate_trajectory（条件式）/ test_dataset.py 同步更新
+- [x] record_episode 记录 wall_start_ns；首帧 compute_ctrl() 预热
+- [x] 修复 real_data.py 夹爪映射 clip(1+raw) 并同步 ARCHITECTURE.md
+- [x] p9_smoke：2 条 640×480 采集 + 转换 + 全部校验通过
+- [x] 新增 convert_to_openarm_v03.py（parquet schema/相机改名/夹爪映射/时间戳/metadata.yaml）
+- [x] 全量采集 200 条（seeds 0–199，--image-episodes 200，MUJOCO_GL=egl）
+- [x] 全量转换 + episode_map.json / conversion_report.json
+- [x] 厂商 validate / Dataset 全量加载通过
+- [x] real_data.py 读取器加载通过（夹爪往返 [0,0.044]）
+- [x] 与 real_data 结构 diff 通过（schema 完全一致，无 metadata 差异）
+- [x] gripper 语义自检（方向正确：raw ∈ [−0.30, 0.01]，越负越闭）
+- [x] phase_docs/p9.md 验收记录回填

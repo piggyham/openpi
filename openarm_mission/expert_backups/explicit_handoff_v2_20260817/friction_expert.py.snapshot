@@ -83,13 +83,19 @@ class FrictionScriptedExpert(RelayScriptedExpert):
         """Follow short Cartesian waypoints near the cup."""
         start_position, _ = self.mission.tcp_pose(side)
         target_position = np.asarray(target_position, dtype=np.float64)
+        total_frames = max(segments, round(seconds * self.fps))
+        frames_per_segment, remainder = divmod(total_frames, segments)
         for segment in range(1, segments + 1):
             fraction = segment / segments
             waypoint = (1.0 - fraction) * start_position + fraction * target_position
+            # Allocate the requested total duration exactly.  Passing the same
+            # fractional duration to every segment and rounding independently
+            # shortened 0.85 s / 7 segments to 14 instead of 17 frames.
+            segment_frames = frames_per_segment + (1 if segment <= remainder else 0)
             self._move_tcp(
                 side,
                 waypoint,
-                seconds / segments,
+                segment_frames / self.fps,
             )
 
     def _reset_for_episode_attempt(self) -> None:
@@ -260,26 +266,73 @@ class FrictionScriptedExpert(RelayScriptedExpert):
         side: str,
         retreat_xy: tuple[float, float],
     ) -> None:
+        is_right_handoff = side == "right"
+        if is_right_handoff:
+            self._set_phase(
+                "中央交接·右爪释放",
+                "杯落桌后右爪完全张开；左爪同步保持全开",
+                (232, 190, 72),
+            )
         prepared, details = self.friction_task.prepare_release(side)
         if not prepared:
             raise RuntimeError(f"{side} friction release rejected: {details}")
         self._set_gripper(
             side,
             self.controller.config.gripper_open_position,
-            0.5,
+            self.expert_config.handoff_release_seconds,
         )
-        self._hold(0.45)
-        self._move_tcp(
-            side,
-            np.array(
-                [
-                    retreat_xy[0],
-                    retreat_xy[1],
-                    self.expert_config.retreat_height,
-                ]
-            ),
-            0.85,
-        )
+
+        # The handoff boundary must contain an unambiguous all-open gripper
+        # state.  Explicitly command both targets even though the idle left
+        # gripper should already be open after reset.
+        if is_right_handoff:
+            for arm_side in ("left", "right"):
+                self.controller.target_gripper[arm_side] = self.controller.config.gripper_open_position
+        self._hold(self.expert_config.handoff_release_settle_seconds)
+
+        if is_right_handoff:
+            # Preserve the current XY exactly: this is a vertical departure,
+            # not another placement correction that could drag the cup or
+            # blur "placing" and "finished placing" in the demonstrations.
+            current_tcp, _ = self.mission.tcp_pose(side)
+            high_tcp = np.asarray(current_tcp, dtype=np.float64).copy()
+            high_tcp[2] = self.expert_config.retreat_height
+            self._set_phase(
+                "中央交接·右臂垂直离场",
+                "保持 XY 不变上抬到高位，明显让出交接空间",
+                (232, 190, 72),
+            )
+            self._move_tcp_linear(
+                side,
+                high_tcp,
+                self.expert_config.handoff_vertical_retreat_seconds,
+            )
+
+            for arm_side in ("left", "right"):
+                self.controller.target_gripper[arm_side] = self.controller.config.gripper_open_position
+            self._set_phase(
+                "中央交接·完成姿势悬停",
+                "右臂已离场 · 杯静止 · 双爪全开 · 左臂尚未接近",
+                (91, 214, 147),
+            )
+            self._hold(self.expert_config.handoff_completion_hold_seconds)
+            if self.task.stage is not RelayStage.WAIT_LEFT_GRASP:
+                raise RuntimeError(
+                    "Right handoff completion hold did not produce a stable cup: "
+                    f"{self.task.summary()}"
+                )
+        else:
+            self._move_tcp(
+                side,
+                np.array(
+                    [
+                        retreat_xy[0],
+                        retreat_xy[1],
+                        self.expert_config.retreat_height,
+                    ]
+                ),
+                self.expert_config.handoff_vertical_retreat_seconds,
+            )
         self._stow_arm_after_task(side)
         self.recovery_events.append(
             {
@@ -290,6 +343,10 @@ class FrictionScriptedExpert(RelayScriptedExpert):
                 "stage": self.task.stage.value,
                 "reason": None,
                 "recovery_action": "friction_release_verified_and_retreated",
+                "explicit_handoff_completion": is_right_handoff,
+                "handoff_completion_hold_seconds": (
+                    self.expert_config.handoff_completion_hold_seconds if is_right_handoff else None
+                ),
             }
         )
 
@@ -320,7 +377,6 @@ class FrictionScriptedExpert(RelayScriptedExpert):
         )
         self._place_welded("right", center, right_yaw)
         self._release_and_retreat("right", center)
-        self._hold(0.45)
         if self.task.stage is not RelayStage.WAIT_LEFT_GRASP:
             raise RuntimeError(f"Friction handoff did not stabilize: {self.task.summary()}")
 
@@ -416,3 +472,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

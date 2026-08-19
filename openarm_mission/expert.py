@@ -7,6 +7,7 @@ from dataclasses import asdict
 import json
 from pathlib import Path
 from typing import Any
+import warnings
 
 import mujoco
 import numpy as np
@@ -20,6 +21,33 @@ from openarm_mission.task import OpenArmRelayTask
 
 class RecoverableExpertError(RuntimeError):
     """A local motion or grasp failure that permits a retract-and-retry."""
+
+
+class SelfCollisionWarning(RuntimeWarning):
+    """A same-arm or arm-to-base contact was detected during expert motion."""
+
+
+def _geom_arm_side(name: str) -> str | None:
+    """Return the arm side represented by one robot or finger-pad geom."""
+    for side in ("left", "right"):
+        if f"openarm_{side}_" in name or (
+            name.startswith(f"mission_{side}_") and name.endswith("finger_pad")
+        ):
+            return side
+    return None
+
+
+def _self_collision_side(names: tuple[str, str]) -> str | None:
+    """Classify a same-side robot contact, including contact with its base."""
+    sides = tuple(_geom_arm_side(name) for name in names)
+    if sides[0] is not None and sides[0] == sides[1]:
+        return sides[0]
+    base = tuple(name.startswith("openarm_body_") for name in names)
+    if base[0] and sides[1] is not None:
+        return sides[1]
+    if base[1] and sides[0] is not None:
+        return sides[0]
+    return None
 
 
 class RelayScriptedExpert(P3EpisodeRunner):
@@ -60,6 +88,8 @@ class RelayScriptedExpert(P3EpisodeRunner):
         self.fault_injections = dict(fault_injections or {})
         self.recovery_events: list[dict[str, Any]] = []
         self.collision_events: list[dict[str, Any]] = []
+        self.self_collision_warnings: list[dict[str, Any]] = []
+        self._active_self_collision_pairs: set[tuple[str, str]] = set()
         self._episode_attempt = 0
         self._grasp_side: str | None = None
         self._suppress_collision_check = False
@@ -117,9 +147,62 @@ class RelayScriptedExpert(P3EpisodeRunner):
                 )
         return unexpected
 
+    def self_collision_contacts(self) -> list[dict[str, Any]]:
+        """Return penetrating same-arm and arm-to-base contacts."""
+        contacts: list[dict[str, Any]] = []
+        for index in range(self.mission.data.ncon):
+            contact = self.mission.data.contact[index]
+            if contact.dist > 0.0:
+                continue
+            names = (
+                self._geom_name(int(contact.geom1)),
+                self._geom_name(int(contact.geom2)),
+            )
+            side = _self_collision_side(names)
+            if side is not None:
+                contacts.append(
+                    {
+                        "side": side,
+                        "geom1": names[0],
+                        "geom2": names[1],
+                        "distance_m": round(float(contact.dist), 6),
+                    }
+                )
+        return contacts
+
+    def _warn_self_collisions(self) -> None:
+        contacts = self.self_collision_contacts()
+        active_pairs = {
+            tuple(sorted((str(contact["geom1"]), str(contact["geom2"]))))
+            for contact in contacts
+        }
+        new_pairs = active_pairs - self._active_self_collision_pairs
+        for contact in contacts:
+            pair = tuple(sorted((str(contact["geom1"]), str(contact["geom2"]))))
+            if pair not in new_pairs:
+                continue
+            event = {
+                "time": round(self.task.elapsed, 6),
+                "episode_attempt": self._episode_attempt,
+                "stage": self.task.stage.value,
+                **contact,
+            }
+            self.self_collision_warnings.append(event)
+            warnings.warn(
+                "self-collision detected: "
+                f"side={contact['side']} {contact['geom1']} <-> {contact['geom2']} "
+                f"distance={contact['distance_m']} m",
+                SelfCollisionWarning,
+                stacklevel=2,
+            )
+        self._active_self_collision_pairs = active_pairs
+
     def _step_frame(self) -> None:
         super()._step_frame()
-        if self._suppress_collision_check or self.task.done:
+        if self.task.done:
+            return
+        self._warn_self_collisions()
+        if self._suppress_collision_check:
             return
         contacts = self.unexpected_contacts()
         if contacts:
@@ -194,7 +277,7 @@ class RelayScriptedExpert(P3EpisodeRunner):
             except RuntimeError:
                 self._move_joints(
                     side,
-                    self.home_qpos[side],
+                    self.ready_qpos[side],
                     self.expert_config.recovery_retract_seconds,
                 )
             self._hold(self.expert_config.recovery_settle_seconds)
@@ -202,6 +285,13 @@ class RelayScriptedExpert(P3EpisodeRunner):
             self._suppress_collision_check = False
 
     def _approach_and_attach(self, side: str) -> float:
+        self._prepare_arm_for_task(side)
+        label = "左" if side == "left" else "右"
+        self._set_phase(
+            f"{label}手可恢复抓取",
+            "工作位接近 · 接触门控 · 失败后高位重试",
+            (99, 183, 255) if side == "left" else (242, 83, 89),
+        )
         offsets = self.expert_config.grasp_xy_offsets
         z_offsets = self.expert_config.grasp_z_offsets
         last_reason = "unknown_grasp_failure"
@@ -295,6 +385,7 @@ class RelayScriptedExpert(P3EpisodeRunner):
         self.controller.reset_targets()
         self._grasp_side = None
         self._suppress_collision_check = False
+        self._active_self_collision_pairs.clear()
 
     def _close_media(self) -> None:
         if self.writer is not None:
@@ -385,6 +476,7 @@ class RelayScriptedExpert(P3EpisodeRunner):
                     for event in self.recovery_events
                 ),
                 "collision_count": len(self.collision_events),
+                "self_collision_warning_count": len(self.self_collision_warnings),
                 "final_xy_error_m": round(
                     float(np.linalg.norm(self.mission.cup_position()[:2] - blue)),
                     6,
@@ -393,6 +485,7 @@ class RelayScriptedExpert(P3EpisodeRunner):
                 "expert_config": asdict(self.expert_config),
                 "recovery_events": self.recovery_events,
                 "collision_events": self.collision_events,
+                "self_collision_warnings": self.self_collision_warnings,
                 "attempt_summaries": attempt_summaries,
                 "frames": self._frame_index,
                 "video": str(self.video_path) if self.write_video else None,

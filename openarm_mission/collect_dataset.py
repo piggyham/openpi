@@ -121,7 +121,13 @@ def collect_dataset(
             results.append(item)
             print(f"progress: {reused + completed}/{episodes}, seed={item['seed']}")
     else:
-        with ProcessPoolExecutor(max_workers=workers) as executor:
+        # max_tasks_per_child=1: each worker process handles exactly one
+        # episode then exits, so the per-episode MuJoCo EGL render context is
+        # fully released when the process dies. Without this, contexts leak
+        # across episodes within long-lived workers and the GPU's EGL context
+        # limit is hit (~14 contexts on this driver), failing with
+        # EGL_BAD_ALLOC. Python 3.11+ required for max_tasks_per_child.
+        with ProcessPoolExecutor(max_workers=workers, max_tasks_per_child=1) as executor:
             futures = {executor.submit(_worker, argument): argument[0] for argument in arguments}
             for completed, future in enumerate(
                 as_completed(futures),

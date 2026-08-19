@@ -18,9 +18,11 @@ from PIL import Image
 from openarm_mission.config import ControllerConfig
 from openarm_mission.friction_expert import FrictionScriptedExpert
 
-# Natural-hang expert with the J1/J4 shoulder-clearance preparation used by
-# the last working collection before the explicit-handoff experiment.
-DATASET_VERSION = "openarm-p10-natural-hang-v1"
+# This revision adds an explicit right-to-left handoff completion segment:
+# release, vertical retreat, and a 1.2 s all-open high hover before the left
+# arm approaches.  Keep it distinct from the earlier natural-hang data so the
+# trajectories and their normalization statistics cannot be mixed silently.
+DATASET_VERSION = "openarm-p10-explicit-handoff-v2"
 GRIPPER_FULL_OPENING_M = 0.044
 TASK_INSTRUCTION = (
     "Use the right arm to move the paper cup from the red area to the "
@@ -796,3 +798,4 @@ def record_episode(
         "capture_images": capture_images,
         "validation": validation,
     }
+

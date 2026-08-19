@@ -18,6 +18,7 @@ class EnvMode(enum.Enum):
     ALOHA_SIM = "aloha_sim"
     DROID = "droid"
     LIBERO = "libero"
+    OPENARM = "openarm"
 
 
 @dataclasses.dataclass
@@ -72,6 +73,12 @@ DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
     EnvMode.LIBERO: Checkpoint(
         config="pi05_libero",
         dir="gs://openpi-assets/checkpoints/pi05_libero",
+    ),
+    EnvMode.OPENARM: Checkpoint(
+        # OpenArm bimanual paper-cup relay. Point --policy.dir to your own
+        # fine-tuned checkpoint (e.g. from the pi05_openarm_paper_cup_relay_lora config).
+        config="pi05_openarm_paper_cup_relay_lora",
+        dir="checkpoints/pi05_openarm_paper_cup_relay_lora/openarm_lora/29999",
     ),
 }
 

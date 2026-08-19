@@ -20,6 +20,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.openarm_policy as openarm_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -356,6 +357,54 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
+class LeRobotOpenArmDataConfig(DataConfigFactory):
+    """Config for training on the OpenArm bimanual paper-cup relay LeRobot dataset.
+
+    The OpenArm dataset (see ``openarm_mission``) stores three RGB views
+    (front / left_wrist / right_wrist), a 16-dim bimanual state, and 14-dim
+    Cartesian-delta actions. OpenArmInputs maps these onto the model image
+    keys directly; actions are already deltas, so no extra delta transform is
+    needed. The prompt comes from the LeRobot task column via
+    ``prompt_from_task`` (set in the TrainConfig's base_config).
+    """
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # Repack the LeRobot dotted keys into the clean keys OpenArmInputs reads.
+        # The OpenArm dataset stores actions under ``action`` (singular, like
+        # Aloha), so we remap it to ``actions`` here.
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "images": {
+                            "front": "observation.images.front",
+                            "left_wrist": "observation.images.left_wrist",
+                            "right_wrist": "observation.images.right_wrist",
+                        },
+                        "state": "observation.state",
+                        "actions": "action",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+        # OpenArm raw actions are already Cartesian deltas, so no DeltaActions.
+        data_transforms = _transforms.Group(
+            inputs=[openarm_policy.OpenArmInputs(model_type=model_config.model_type)],
+            outputs=[openarm_policy.OpenArmOutputs()],
+        )
+        model_transforms = ModelTransformFactory()(model_config)
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=("action",),
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class RLDSDroidDataConfig(DataConfigFactory):
     """
     Config for training on DROID, using RLDS data format (for efficient training on larger datasets).
@@ -524,6 +573,8 @@ class TrainConfig:
 
     # If true, will enable wandb logging.
     wandb_enabled: bool = True
+    # If true, will upload sample camera views to W&B at step 0.
+    wandb_log_images: bool = True
 
     # Used to pass metadata to the policy server.
     policy_metadata: dict[str, Any] | None = None
@@ -760,6 +811,66 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi05_openarm_paper_cup_relay",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=True),
+        data=LeRobotOpenArmDataConfig(
+            repo_id="openarm_paper_cup_relay",
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        batch_size=64,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=100_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        # LoRA fine-tuning of pi0.5 for the OpenArm paper-cup relay task. Only the
+        # low-rank adapters are trained (backbone frozen), so it fits a single 24 GB
+        # GPU (e.g. RTX 4090, where full fine-tuning needs >70 GB). Run with
+        # XLA_PYTHON_CLIENT_MEM_FRACTION=0.9. Use the full config above on a bigger GPU.
+        name="pi05_openarm_paper_cup_relay_lora",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotOpenArmDataConfig(
+            repo_id="openarm_paper_cup_relay",
+            base_config=DataConfig(prompt_from_task=True),
+            # Share the norm stats computed for the full config (same dataset),
+            # so we don't need to recompute them under the lora config name.
+            assets=AssetsConfig(assets_dir="assets/pi05_openarm_paper_cup_relay"),
+        ),
+        batch_size=32,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=100_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+        # Freeze filter must match the LoRA model config above.
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        # Turn off EMA for LoRA fine-tuning.
+        ema_decay=None,
     ),
     #
     # Fine-tuning Aloha configs.

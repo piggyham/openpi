@@ -115,11 +115,22 @@ class BimanualCartesianController:
         if rotation_norm > self.config.max_rotation_delta:
             rotation *= self.config.max_rotation_delta / rotation_norm
 
-        self.target_position[side] = np.clip(
-            self.target_position[side] + translation,
-            self.config.workspace_min_array(),
-            self.config.workspace_max_array(),
-        )
+        current_target = self.target_position[side]
+        candidate_target = current_target + translation
+        lower = self.config.workspace_min_array()
+        upper = self.config.workspace_max_array()
+
+        # The natural hanging pose is intentionally outside the tabletop task
+        # workspace.  While an axis is outside, permit only monotonic motion
+        # back toward the workspace instead of snapping immediately to a
+        # boundary (or allowing motion farther away).  Once inside, retain the
+        # normal hard workspace clipping behavior.
+        target = np.clip(candidate_target, lower, upper)
+        below = current_target < lower
+        above = current_target > upper
+        target[below] = np.clip(candidate_target[below], current_target[below], lower[below])
+        target[above] = np.clip(candidate_target[above], upper[above], current_target[above])
+        self.target_position[side] = target
 
         delta_quaternion = _rotation_vector_to_quaternion(rotation)
         composed = np.empty(4)

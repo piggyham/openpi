@@ -63,7 +63,16 @@ rlds = [
 ]
 
 [tool.uv]
-override-dependencies = ["ml-dtypes==0.4.1", "tensorstore==0.1.74"]
+# NOTE: evdev (pulled in via lerobot -> pynput -> evdev) only ships an sdist and
+# requires a C compiler to build against the local kernel headers. This host
+# has no `cc` and cannot install one (no root), and pynput's keyboard backend
+# is unused for training/inference, so drop evdev on Linux via a marker that
+# never matches.
+override-dependencies = [
+    "ml-dtypes==0.4.1",
+    "tensorstore==0.1.74",
+    "evdev ; sys_platform == 'win32'",
+]
 
 [tool.uv.sources]
 openpi-client = { workspace = true }

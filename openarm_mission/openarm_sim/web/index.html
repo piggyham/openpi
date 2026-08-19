@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenArm Sim</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --text: #ffffff;
+    --text-2: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --target: #3987e5;
+    --actual: #d95926;
+    --ok: #0ca30c;
+    --warn: #fab219;
+    --crit: #d03b3b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--text);
+    font: 13px/1.45 system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  header, .bar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 8px 12px; background: var(--surface); border-bottom: 1px solid var(--border);
+  }
+  h1 { font-size: 15px; margin: 0 8px 0 0; font-weight: 600; }
+  select, button, input[type="range"] { accent-color: var(--target); }
+  select, button, input[type="text"], input[type="url"] {
+    background: #232322; color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 8px; font: inherit; cursor: pointer;
+  }
+  input[type="text"], input[type="url"] { cursor: text; min-width: 260px; }
+  button.on { background: var(--target); border-color: var(--target); color: #fff; }
+  .seg button { border-radius: 0; }
+  .seg button:first-child { border-radius: 6px 0 0 6px; }
+  .seg button:last-child { border-radius: 0 6px 6px 0; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .dot.ok { background: var(--ok); } .dot.crit { background: var(--crit); }
+  #connText { color: var(--text-2); }
+  #toast {
+    margin-left: auto; color: var(--warn); max-width: 40%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .bar { gap: 14px; }
+  .sourceBar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 8px 12px; background: #141413; border-bottom: 1px solid var(--border);
+  }
+  .sourceControls { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 300px; }
+  .sourceControls input { flex: 1; }
+  .sourceHint { color: var(--muted); font-size: 12px; }
+  #seek { flex: 1; }
+  #frameLabel { color: var(--text-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  main {
+    display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    gap: 12px; padding: 12px; align-items: start;
+  }
+  img { width: 100%; image-rendering: auto; background: #000; border: 1px solid var(--border); border-radius: 6px; display: block; }
+  #img_front { max-height: 46vh; object-fit: contain; }
+  .row2, #recRow { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+  #recRow { grid-template-columns: 1fr 1fr 1fr; }
+  .camLabel { color: var(--muted); margin: 8px 0 3px; font-size: 11px; letter-spacing: .04em; }
+  .ghostKey { color: #7bdfff; margin-left: 10px; letter-spacing: 0; }
+  .ghostSwatch {
+    width: 12px; height: 8px; display: inline-block; vertical-align: -1px;
+    border: 1px solid #7bdfff; background: rgba(31, 209, 255, .04); border-radius: 2px;
+  }
+  .freeHead { display: flex; justify-content: space-between; align-items: center; margin-top: 0; }
+  aside { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  table { border-collapse: collapse; width: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
+  th, td { padding: 2px 8px; text-align: right; font-variant-numeric: tabular-nums; }
+  th { color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--border); }
+  td:first-child, th:first-child { text-align: left; color: var(--text-2); }
+  td.warn { color: var(--warn); } td.crit { color: var(--crit); }
+  .legend { color: var(--text-2); display: flex; gap: 14px; align-items: center; font-size: 12px; }
+  .sw { width: 14px; height: 0; border-top: 2px solid; display: inline-block; vertical-align: middle; }
+  .sw.target { border-color: var(--target); } .sw.actual { border-color: var(--actual); }
+  #charts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .chart { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px 4px 2px; }
+  .chart .t { color: var(--text-2); font-size: 10.5px; padding: 0 4px; display: flex; justify-content: space-between; }
+  .chart canvas { width: 100%; height: 64px; display: block; }
+  #tooltip {
+    position: fixed; z-index: 9; pointer-events: none; background: #232322;
+    border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px;
+    color: var(--text); font-size: 11.5px; font-variant-numeric: tabular-nums;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>OpenArm Sim</h1>
+  <select id="episode" title="episode"></select>
+  <div class="seg" id="modeSeg">
+    <button data-mode="dynamic" class="on" title="MuJoCo 动力学推进，碰撞会影响运动">Dynamic（碰撞）</button><button data-mode="kinematic" title="直接放置录制关节姿态，不产生碰撞响应">Kinematic（直放）</button><button data-mode="reality" hidden>Reality</button>
+  </div>
+  <button id="play">⏸ 暂停</button>
+  <select id="speed">
+    <option value="0.5">0.5x</option><option value="1" selected>1x</option>
+    <option value="2">2x</option><option value="4">4x</option>
+  </select>
+  <label style="color:var(--text-2);font-size:12px">桌面高 <input type="number" id="tableH" style="width:52px;background:#232322;color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 4px;font:inherit" step="0.01" min="0.05" max="0.60"> m</label>
+  <label style="color:var(--text-2)"><input type="checkbox" id="compare"> 显示录制相机</label>
+  <label id="targetGhostLabel" style="color:var(--text-2)" hidden><input type="checkbox" id="targetGhost" checked> taget虚影</label>
+  <span style="margin-left:auto"></span>
+  <span class="dot crit" id="conn"></span><span id="connText">连接中…</span>
+  <span id="sourceState"></span>
+  <span id="toast"></span>
+</header>
+<div class="sourceBar">
+  <label>数据源
+    <select id="sourceMode">
+      <option value="recorded">录制文件</option>
+      <option value="live">实时实物关节</option>
+    </select>
+  </label>
+  <div class="sourceControls" id="recordedControls">
+    <input id="recordedPath" type="text" spellcheck="false"
+      placeholder="服务器上的 LeRobot 目录、v0.3.0 目录或 episode_*.parquet">
+    <button id="loadRecorded">加载路径</button>
+  </div>
+  <div class="sourceControls" id="liveControls" hidden>
+    <input id="liveUrl" type="url" spellcheck="false"
+      placeholder="http://127.0.0.1:9000/sse/sim">
+    <button id="connectLive">连接实物</button>
+  </div>
+  <span class="sourceHint" id="sourceHint">路径由运行 OpenArmSim 的服务器读取</span>
+</div>
+<div class="bar">
+  <input type="range" id="seek" min="0" max="0" value="0" step="1">
+  <span id="frameLabel">frame —/—</span>
+</div>
+<main>
+  <section>
+    <div class="camLabel freeHead">
+      <span>SIM · 自由视角 <span class="ghostKey" id="ghostLegend" hidden><span class="ghostSwatch"></span> 青色虚影 = Target</span></span>
+      <span>
+        <button id="camReset">重置视角</button>
+        <label style="color:var(--text-2)"><input type="checkbox" id="camFollow"> 跟随纸杯</label>
+      </span>
+    </div>
+    <img id="img_free" alt="free view" style="cursor:grab">
+    <div class="camLabel">左键拖动旋转 · Shift/右键拖动平移 · 滚轮缩放</div>
+    <div class="camLabel">SIM · front</div>
+    <img id="img_front" alt="front">
+    <div class="row2">
+      <div><div class="camLabel">SIM · left_wrist</div><img id="img_left_wrist" alt="left_wrist"></div>
+      <div><div class="camLabel">SIM · right_wrist</div><img id="img_right_wrist" alt="right_wrist"></div>
+    </div>
+    <div id="recRow" hidden>
+      <div><div class="camLabel">REC · front</div><img id="rec_front" alt="rec front"></div>
+      <div><div class="camLabel">REC · left_wrist</div><img id="rec_left_wrist" alt="rec left_wrist"></div>
+      <div><div class="camLabel">REC · right_wrist</div><img id="rec_right_wrist" alt="rec right_wrist"></div>
+    </div>
+  </section>
+  <aside>
+    <table id="joints">
+      <thead><tr><th>关节</th><th>target</th><th>actual</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="legend"><span><span class="sw target"></span> target</span><span><span class="sw actual"></span> actual</span><span style="color:var(--muted)">滚动窗口 ≈10 s</span></div>
+    <div id="charts"></div>
+  </aside>
+</main>
+<div id="tooltip" hidden></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const CAMS = ["front", "left_wrist", "right_wrist"];
+const BUF = 512, WIN = 10;  // ring buffer cap, chart window (s)
+
+let cfg = null, st = null, dragging = false, lastFrameIndex = -1, lastEpisode = null, liveGeneration = null;
+const channels = [];  // {name, unit, buf: {t:[], tgt:[], act:[]}, canvas, ctx, el, dirty}
+
+// ---- build joint table + charts from state_names in config ----
+function shortName(name) {
+  return name.replace("left_", "L ").replace("right_", "R ")
+             .replace("_joint_", " J").replace("_rad", "").replace("gripper_opening_m", "grip");
+}
+function buildChannels(names) {
+  const tbody = document.querySelector("#joints tbody");
+  const grid = $("charts");
+  tbody.innerHTML = ""; grid.innerHTML = "";
+  channels.length = 0;
+  names.forEach((name, i) => {
+    const isGrip = name.includes("gripper");
+    const ch = {
+      name, unit: isGrip ? "m" : "deg",
+      toDisp: isGrip ? (v) => v : (v) => v * 180 / Math.PI,
+      fmt: isGrip ? (v) => v.toFixed(3) : (v) => v.toFixed(1),
+      thr: isGrip ? 0.005 : 5 * Math.PI / 180,
+      t: [], tgt: [], act: [], dirty: true, hover: -1,
+    };
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${name}</td><td class="tg">–</td><td class="ac">–</td>`;
+    tbody.appendChild(tr);
+    ch.tgEl = tr.querySelector(".tg"); ch.acEl = tr.querySelector(".ac");
+    const box = document.createElement("div");
+    box.className = "chart";
+    box.innerHTML = `<div class="t"><span>${shortName(name)}</span><span class="val"></span></div><canvas></canvas>`;
+    grid.appendChild(box);
+    ch.canvas = box.querySelector("canvas");
+    ch.ctx = ch.canvas.getContext("2d");
+    ch.valEl = box.querySelector(".val");
+    ch.canvas.addEventListener("pointermove", (e) => hoverMove(e, ch));
+    ch.canvas.addEventListener("pointerleave", () => { ch.hover = -1; ch.dirty = true; $("tooltip").hidden = true; });
+    channels.push(ch);
+  });
+  resizeCanvases();
+}
+function resizeCanvases() {
+  const dpr = window.devicePixelRatio || 1;
+  channels.forEach((ch) => {
+    const w = ch.canvas.clientWidth, h = ch.canvas.clientHeight;
+    ch.canvas.width = Math.max(1, Math.round(w * dpr));
+    ch.canvas.height = Math.max(1, Math.round(h * dpr));
+    ch.dirty = true;
+  });
+}
+window.addEventListener("resize", resizeCanvases);
+
+// ---- websocket ----
+let ws = null, backoff = 1000;
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/`);
+  ws.onopen = () => { backoff = 1000; setConn(true); };
+  ws.onclose = () => { setConn(false); setTimeout(connect, backoff); backoff = Math.min(backoff * 2, 8000); };
+  ws.onmessage = (ev) => onMsg(JSON.parse(ev.data));
+}
+function setConn(ok) {
+  $("conn").className = "dot " + (ok ? "ok" : "crit");
+  $("connText").textContent = ok ? "已连接" : "断开,重连中…";
+}
+function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+function onMsg(m) {
+  if (m.type === "config") {
+    cfg = m;
+    const defaultEntry = m.episodes.find((e) => e.name === m.default_episode);
+    $("sourceMode").value = defaultEntry ? defaultEntry.source : (m.live_url ? "live" : "recorded");
+    $("recordedPath").value = m.recorded_path || "";
+    $("liveUrl").value = m.live_url || "";
+    renderSourceControls();
+    setEpisodes(m.episodes);
+    if (!m.has_cup) {
+      const fol = $("camFollow");
+      fol.disabled = true;
+      fol.parentElement.title = "该场景无水瓶";
+    }
+    buildChannels(m.state_names);
+    if (m.table_height != null) {
+      const th = $("tableH");
+      th.value = m.table_height.toFixed(3);
+    }
+  } else if (m.type === "status") {
+    st = m;
+    applyStatus();
+  } else if (m.type === "episodes") {
+    cfg.episodes = m.episodes;
+    setEpisodes(m.episodes);
+  } else if (m.type === "frame") {
+    ingest(m);
+  } else if (m.type === "error") {
+    $("toast").textContent = "⚠ " + m.message;
+    setTimeout(() => { $("toast").textContent = ""; }, 4000);
+  }
+}
+
+function setEpisodes(episodes) {
+  const selected = st && st.episode;
+  const sel = $("episode");
+  const source = $("sourceMode").value;
+  const visible = episodes.filter((e) => (e.source || "recorded") === source);
+  sel.replaceChildren();
+  visible.forEach((entry) => {
+    const option = document.createElement("option");
+    option.value = entry.name;
+    option.textContent = entry.path ? `${entry.name} — ${entry.path}` : entry.name;
+    sel.appendChild(option);
+  });
+  if (selected && visible.some((e) => e.name === selected)) sel.value = selected;
+  sel.disabled = visible.length === 0;
+}
+
+function renderSourceControls() {
+  const live = $("sourceMode").value === "live";
+  $("recordedControls").hidden = live;
+  $("liveControls").hidden = !live;
+  $("sourceHint").textContent = live
+    ? "连接 OpenArm Panel 的 SSE 关节流"
+    : "路径由运行 OpenArmSim 的服务器读取，可填写目录或单个 parquet";
+}
+
+function applyStatus() {
+  if (!st) return;
+  const sourceMode = st.source_mode || (st.source === "live" ? "live" : "recorded");
+  if ($("sourceMode").value !== sourceMode) {
+    $("sourceMode").value = sourceMode;
+    renderSourceControls();
+  }
+  if (cfg) setEpisodes(cfg.episodes);
+  if (st.live_url && document.activeElement !== $("liveUrl")) $("liveUrl").value = st.live_url;
+  if (st.recorded_path && document.activeElement !== $("recordedPath"))
+    $("recordedPath").value = st.recorded_path;
+  const sel = $("episode");
+  if ([...sel.options].some((option) => option.value === st.episode)) sel.value = st.episode;
+  if (lastEpisode !== st.episode) {
+    lastEpisode = st.episode; lastFrameIndex = -1; liveGeneration = null;
+    channels.forEach((ch) => { ch.t.length = ch.tgt.length = ch.act.length = 0; ch.dirty = true; });
+  }
+  const modes = st.available_modes || ["dynamic", "kinematic"];
+  document.querySelectorAll("#modeSeg button").forEach((b) => {
+    b.hidden = !modes.includes(b.dataset.mode);
+    b.disabled = modes.length === 1;
+    b.classList.toggle("on", b.dataset.mode === st.mode);
+  });
+  const live = st.source === "live";
+  $("play").textContent = st.playing ? "⏸ 暂停" : "▶ 播放";
+  $("play").disabled = live;
+  $("speed").disabled = live;
+  $("seek").disabled = live;
+  if (String($("speed").value) !== String(st.speed) && [0.5, 1, 2, 4].includes(st.speed))
+    $("speed").value = st.speed;
+  const cmp = $("compare");
+  cmp.disabled = !st.has_recorded_images;
+  if (cmp.checked !== st.compare) cmp.checked = st.compare;
+  $("recRow").hidden = !st.compare;
+  const ghost = $("targetGhost");
+  $("targetGhostLabel").hidden = !st.target_ghost_available;
+  ghost.disabled = !st.target_ghost_available;
+  if (ghost.checked !== st.target_ghost_enabled) ghost.checked = st.target_ghost_enabled;
+  $("seek").max = Math.max(0, st.frame_count - 1);
+  $("sourceState").textContent = live
+    ? (st.live && !st.live.stale ? "LIVE · 已连接" : "LIVE · stale/重连中")
+    : "";
+}
+
+function ingest(f) {
+  if (f.live_generation != null && liveGeneration !== f.live_generation) {
+    liveGeneration = f.live_generation; lastFrameIndex = -1;
+    channels.forEach((ch) => { ch.t.length = ch.tgt.length = ch.act.length = 0; ch.dirty = true; });
+  }
+  if (f.frame_index === lastFrameIndex) return;
+  lastFrameIndex = f.frame_index;
+  CAMS.forEach((c) => { $("img_" + c).src = "data:image/jpeg;base64," + f.images[c]; });
+  if (f.images.free) $("img_free").src = "data:image/jpeg;base64," + f.images.free;
+  $("ghostLegend").hidden = !f.target_ghost;
+  if (f.recorded) CAMS.forEach((c) => { if (f.recorded[c]) $("rec_" + c).src = "data:image/jpeg;base64," + f.recorded[c]; });
+  const hasTarget = Array.isArray(f.target);
+  channels.forEach((ch, i) => {
+    const target = hasTarget ? ch.toDisp(f.target[i]) : NaN;
+    const actual = ch.toDisp(f.actual[i]);
+    ch.t.push(f.t); ch.tgt.push(target); ch.act.push(actual);
+    if (ch.t.length > BUF) { ch.t.shift(); ch.tgt.shift(); ch.act.shift(); }
+    ch.dirty = true;
+    ch.tgEl.textContent = hasTarget ? ch.fmt(target) : "不可用";
+    ch.acEl.textContent = ch.fmt(actual);
+    const err = hasTarget ? Math.abs(f.target[i] - f.actual[i]) : 0;
+    ch.acEl.className = "ac" + (hasTarget && err > ch.thr ? " crit" : "");
+    ch.valEl.textContent = ch.fmt(actual);
+  });
+  const indexLabel = st && st.source === "live"
+    ? `seq ${f.frame_index}`
+    : `frame ${String(f.frame_index).padStart(4, "0")}/${st ? st.frame_count - 1 : "—"}`;
+  const flags = `${f.render_clamped ? " · render-clamped" : ""}${f.live && f.live.stale ? " · stale" : ""}`;
+  $("frameLabel").textContent = `${indexLabel}  t=${f.t.toFixed(2)}s  [${f.mode}]${flags}`;
+  if (!dragging) $("seek").value = f.frame_index;
+}
+
+// ---- charts ----
+function drawChart(ch) {
+  const ctx = ch.ctx, W = ch.canvas.width, H = ch.canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  const n = ch.t.length;
+  if (n < 2) return;
+  const t1 = ch.t[n - 1], t0 = t1 - WIN;
+  let i0 = n - 1;
+  while (i0 > 0 && ch.t[i0] >= t0) i0--;
+  let lo = Infinity, hi = -Infinity;
+  for (let i = i0; i < n; i++) {
+    if (Number.isFinite(ch.tgt[i])) { lo = Math.min(lo, ch.tgt[i]); hi = Math.max(hi, ch.tgt[i]); }
+    if (Number.isFinite(ch.act[i])) { lo = Math.min(lo, ch.act[i]); hi = Math.max(hi, ch.act[i]); }
+  }
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return;
+  if (hi - lo < 1e-6) { hi += 0.5; lo -= 0.5; }
+  const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+  const X = (t) => (t - t0) / WIN * W;
+  const Y = (v) => H - (v - lo) / (hi - lo) * H;
+  ctx.strokeStyle = getCss("--grid"); ctx.lineWidth = 1;
+  for (let g = 1; g < 3; g++) { ctx.beginPath(); ctx.moveTo(0, H * g / 3); ctx.lineTo(W, H * g / 3); ctx.stroke(); }
+  const line = (arr, color) => {
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath(); let drawing = false;
+    for (let i = i0; i < n; i++) {
+      if (!Number.isFinite(arr[i])) { drawing = false; continue; }
+      const x = X(ch.t[i]), y = Y(arr[i]); drawing ? ctx.lineTo(x, y) : ctx.moveTo(x, y); drawing = true;
+    }
+    ctx.stroke();
+  };
+  line(ch.tgt, getCss("--target"));
+  line(ch.act, getCss("--actual"));
+  if (ch.hover >= i0 && ch.hover < n) {
+    const x = X(ch.t[ch.hover]);
+    ctx.strokeStyle = getCss("--axis"); ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+}
+function getCss(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function hoverMove(e, ch) {
+  const n = ch.t.length; if (!n) return;
+  const rect = ch.canvas.getBoundingClientRect();
+  const t0 = ch.t[n - 1] - WIN;
+  const t = t0 + (e.clientX - rect.left) / rect.width * WIN;
+  let best = -1, bd = Infinity;
+  for (let i = 0; i < n; i++) { const d = Math.abs(ch.t[i] - t); if (d < bd) { bd = d; best = i; } }
+  ch.hover = best; ch.dirty = true;
+  const tip = $("tooltip");
+  tip.hidden = false;
+  tip.style.left = (e.clientX + 14) + "px"; tip.style.top = (e.clientY + 10) + "px";
+  tip.innerHTML = `${ch.name}<br>t=${ch.t[best].toFixed(2)}s target=${ch.fmt(ch.tgt[best])} actual=${ch.fmt(ch.act[best])}`;
+}
+function rafLoop() {
+  flushCam();
+  channels.forEach((ch) => { if (ch.dirty) { drawChart(ch); ch.dirty = false; } });
+  requestAnimationFrame(rafLoop);
+}
+
+// ---- controls (server status is the source of truth; UI just sends) ----
+$("episode").addEventListener("change", (e) => send({ type: "select_episode", episode: e.target.value }));
+$("sourceMode").addEventListener("change", (e) => {
+  renderSourceControls();
+  if (cfg) setEpisodes(cfg.episodes);
+  if (e.target.value === "recorded") {
+    send({ type: "select_source", source: "recorded" });
+  } else if ($("liveUrl").value.trim()) {
+    send({ type: "select_source", source: "live" });
+  } else {
+    $("liveUrl").focus();
+  }
+});
+function loadRecordedPath() {
+  const path = $("recordedPath").value.trim();
+  if (path) send({ type: "load_recorded_path", path });
+}
+function connectLive() {
+  const url = $("liveUrl").value.trim();
+  if (url) send({ type: "set_live_source", url });
+}
+$("loadRecorded").addEventListener("click", loadRecordedPath);
+$("recordedPath").addEventListener("keydown", (e) => { if (e.key === "Enter") loadRecordedPath(); });
+$("connectLive").addEventListener("click", connectLive);
+$("liveUrl").addEventListener("keydown", (e) => { if (e.key === "Enter") connectLive(); });
+document.querySelectorAll("#modeSeg button").forEach((b) =>
+  b.addEventListener("click", () => send({ type: "set_mode", mode: b.dataset.mode })));
+$("play").addEventListener("click", () => send({ type: st && st.playing ? "pause" : "play" }));
+$("speed").addEventListener("change", (e) => send({ type: "set_speed", speed: +e.target.value }));
+$("compare").addEventListener("change", (e) => send({ type: "set_compare", enabled: e.target.checked }));
+$("targetGhost").addEventListener("change", (e) => send({ type: "set_target_ghost", enabled: e.target.checked }));
+$("tableH").addEventListener("change", (e) => send({ type: "set_table_height", height: +e.target.value }));
+$("seek").addEventListener("pointerdown", () => { dragging = true; });
+window.addEventListener("pointerup", () => { dragging = false; });
+$("seek").addEventListener("input", (e) => {
+  $("frameLabel").textContent = `frame ${String(e.target.value).padStart(4, "0")}/… (拖动中)`;
+});
+$("seek").addEventListener("change", (e) => send({ type: "seek", frame: +e.target.value }));
+
+// ---- free-camera drag (server-side orbit/pan/zoom) ----
+const freeImg = $("img_free");
+let camDrag = null;
+const camPend = { action: "rotate", dx: 0, dy: 0, queued: false };
+function flushCam() {
+  if (camPend.queued && (Math.abs(camPend.dx) > 1e-4 || Math.abs(camPend.dy) > 1e-4))
+    send({ type: "camera_move", action: camPend.action, dx: camPend.dx, dy: camPend.dy });
+  camPend.dx = 0; camPend.dy = 0; camPend.queued = false;
+}
+freeImg.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  freeImg.setPointerCapture(e.pointerId);
+  camDrag = { action: (e.button === 2 || e.shiftKey) ? "pan" : "rotate", x: e.clientX, y: e.clientY };
+  freeImg.style.cursor = "grabbing";
+});
+freeImg.addEventListener("pointermove", (e) => {
+  if (!camDrag) return;
+  const w = freeImg.clientWidth || 1, h = freeImg.clientHeight || 1;
+  camPend.action = camDrag.action;
+  camPend.dx += (e.clientX - camDrag.x) / w;
+  camPend.dy += (e.clientY - camDrag.y) / h;
+  camDrag.x = e.clientX; camDrag.y = e.clientY;
+  camPend.queued = true;
+});
+const endCamDrag = () => { camDrag = null; freeImg.style.cursor = "grab"; };
+freeImg.addEventListener("pointerup", endCamDrag);
+freeImg.addEventListener("pointercancel", endCamDrag);
+freeImg.addEventListener("contextmenu", (e) => e.preventDefault());
+freeImg.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  send({ type: "camera_move", action: "zoom", dx: 0, dy: e.deltaY / 240 });
+}, { passive: false });
+$("camReset").addEventListener("click", () => send({ type: "camera_reset" }));
+$("camFollow").addEventListener("change", (e) => send({ type: "camera_follow", enabled: e.target.checked }));
+
+connect();
+requestAnimationFrame(rafLoop);
+</script>
+</body>
+</html>

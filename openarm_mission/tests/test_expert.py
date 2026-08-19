@@ -3,15 +3,62 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
+import warnings
 
 import mujoco
 import numpy as np
 
 from openarm_mission.expert import RelayScriptedExpert
+from openarm_mission.expert import SelfCollisionWarning
+from openarm_mission.expert import _self_collision_side
 
 
 class RelayScriptedExpertTest(unittest.TestCase):
+    def test_self_collision_classification(self):
+        self.assertEqual(
+            _self_collision_side(("openarm_left_link2_collision", "openarm_left_link6_collision")),
+            "left",
+        )
+        self.assertEqual(
+            _self_collision_side(("openarm_body_link0_collision", "openarm_right_link4_collision")),
+            "right",
+        )
+        self.assertEqual(
+            _self_collision_side(("mission_left_left_finger_pad", "openarm_left_hand_collision")),
+            "left",
+        )
+        self.assertIsNone(
+            _self_collision_side(("openarm_left_link6_collision", "openarm_right_link6_collision"))
+        )
+        self.assertIsNone(
+            _self_collision_side(("mission_table_top", "openarm_left_link5_collision"))
+        )
+
+    def test_self_collision_warning_is_emitted_once_per_contact_onset(self):
+        expert = RelayScriptedExpert.__new__(RelayScriptedExpert)
+        expert.self_collision_warnings = []
+        expert._active_self_collision_pairs = set()  # noqa: SLF001
+        expert._episode_attempt = 0  # noqa: SLF001
+        expert.task = SimpleNamespace(elapsed=1.25, stage=SimpleNamespace(value="test"))
+        contact = {
+            "side": "left",
+            "geom1": "openarm_left_link2_collision",
+            "geom2": "openarm_left_link6_collision",
+            "distance_m": -0.001,
+        }
+        expert.self_collision_contacts = lambda: [contact]
+
+        with self.assertWarns(SelfCollisionWarning):
+            expert._warn_self_collisions()  # noqa: SLF001
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            expert._warn_self_collisions()  # noqa: SLF001
+
+        self.assertEqual(caught, [])
+        self.assertEqual(len(expert.self_collision_warnings), 1)
+
     def test_baseline_has_no_unexpected_contacts(self):
         expert = RelayScriptedExpert(
             seed=0,
